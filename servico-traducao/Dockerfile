@@ -7,7 +7,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Instalar dependências
-RUN npm ci --only=production
+RUN npm install --production
 
 # Copiar código fonte
 COPY . .
@@ -26,4 +26,4 @@ USER nodejs
 EXPOSE 3001
 
 # Comando para iniciar o worker
-CMD ["node", "worker.js"]
+CMD ["node", "src/worker.js"]

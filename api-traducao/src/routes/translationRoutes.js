@@ -23,7 +23,7 @@ router.post('/', validateCreateTranslation, async (req, res) => {
       sourceText,
       sourceLanguage,
       targetLanguage,
-      status: 'queued'
+      status: 'pending'
     });
 
     // Publicar na fila RabbitMQ
@@ -40,7 +40,7 @@ router.post('/', validateCreateTranslation, async (req, res) => {
     res.status(202).json({
       message: 'Translation request received and queued for processing',
       requestId,
-      status: 'queued',
+      status: 'pending',
       estimatedProcessingTime: '1-5 minutes'
     });
 

@@ -1,154 +1,127 @@
-const Joi = require('joi');
+const { body, param, query, validationResult } = require('express-validator');
+const logger = require('../utils/logger');
 
-// Idiomas suportados (você pode expandir esta lista)
+// Lista de idiomas suportados
 const SUPPORTED_LANGUAGES = [
   'en', 'pt', 'es', 'fr', 'de', 'it', 'ja', 'ko', 'zh', 'ru', 'ar', 'hi', 'tr', 'nl', 'sv', 'da', 'no', 'fi'
 ];
 
-// Schema para criação de tradução
-const createTranslationSchema = Joi.object({
-  sourceText: Joi.string()
-    .min(1)
-    .max(5000)
-    .required()
-    .messages({
-      'string.empty': 'Source text cannot be empty',
-      'string.min': 'Source text must be at least 1 character long',
-      'string.max': 'Source text cannot exceed 5000 characters',
-      'any.required': 'Source text is required'
+// Função para obter idiomas suportados
+const getSupportedLanguages = () => SUPPORTED_LANGUAGES;
+
+// Validador para criar tradução
+const validateCreateTranslation = [
+  body('sourceText')
+    .notEmpty().withMessage('O texto de origem é obrigatório')
+    .isString().withMessage('O texto de origem deve ser uma string')
+    .isLength({ min: 1, max: 5000 }).withMessage('O texto de origem deve ter entre 1 e 5000 caracteres'),
+  
+  body('sourceLanguage')
+    .notEmpty().withMessage('O idioma de origem é obrigatório')
+    .isString().withMessage('O idioma de origem deve ser uma string')
+    .isIn(SUPPORTED_LANGUAGES).withMessage(`O idioma de origem deve ser um dos seguintes: ${SUPPORTED_LANGUAGES.join(', ')}`),
+  
+  body('targetLanguage')
+    .notEmpty().withMessage('O idioma de destino é obrigatório')
+    .isString().withMessage('O idioma de destino deve ser uma string')
+    .isIn(SUPPORTED_LANGUAGES).withMessage(`O idioma de destino deve ser um dos seguintes: ${SUPPORTED_LANGUAGES.join(', ')}`)
+    .custom((value, { req }) => {
+      if (value === req.body.sourceLanguage) {
+        throw new Error('O idioma de destino não pode ser igual ao idioma de origem');
+      }
+      return true;
     }),
-
-  sourceLanguage: Joi.string()
-    .valid(...SUPPORTED_LANGUAGES)
-    .required()
-    .messages({
-      'any.only': `Source language must be one of: ${SUPPORTED_LANGUAGES.join(', ')}`,
-      'any.required': 'Source language is required'
-    }),
-
-  targetLanguage: Joi.string()
-    .valid(...SUPPORTED_LANGUAGES)
-    .required()
-    .messages({
-      'any.only': `Target language must be one of: ${SUPPORTED_LANGUAGES.join(', ')}`,
-      'any.required': 'Target language is required'
-    })
-}).custom((value, helpers) => {
-  // Validar que sourceLanguage e targetLanguage são diferentes
-  if (value.sourceLanguage === value.targetLanguage) {
-    return helpers.error('custom.sameLanguage');
+  
+  (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.warn('Erro de validação na criação de tradução:', errors.array());
+      return res.status(400).json({
+        error: 'Validation Error',
+        details: errors.array()
+      });
+    }
+    
+    // Adicionar dados validados ao req
+    req.validatedData = {
+      sourceText: req.body.sourceText,
+      sourceLanguage: req.body.sourceLanguage,
+      targetLanguage: req.body.targetLanguage
+    };
+    
+    next();
   }
-  return value;
-}).messages({
-  'custom.sameLanguage': 'Source and target languages must be different'
-});
+];
 
-// Schema para query parameters de listagem
-const listTranslationsSchema = Joi.object({
-  limit: Joi.number()
-    .integer()
-    .min(1)
-    .max(100)
-    .default(50),
-
-  offset: Joi.number()
-    .integer()
-    .min(0)
-    .default(0),
-
-  status: Joi.string()
-    .valid('queued', 'processing', 'completed', 'failed')
-    .optional(),
-
-  sortBy: Joi.string()
-    .valid('created_at', 'updated_at', 'status')
-    .default('created_at'),
-
-  sortOrder: Joi.string()
-    .valid('ASC', 'DESC')
-    .default('DESC')
-});
-
-// Schema para validação de UUID
-const uuidSchema = Joi.string()
-  .uuid({ version: 'uuidv4' })
-  .required()
-  .messages({
-    'string.guid': 'Request ID must be a valid UUID',
-    'any.required': 'Request ID is required'
-  });
-
-// Middleware de validação
-function validateCreateTranslation(req, res, next) {
-  const { error, value } = createTranslationSchema.validate(req.body, {
-    abortEarly: false,
-    stripUnknown: true
-  });
-
-  if (error) {
-    return res.status(400).json({
-      error: 'Validation error',
-      details: error.details.map(detail => ({
-        field: detail.path.join('.'),
-        message: detail.message
-      }))
-    });
+// Validador para buscar tradução por requestId
+const validateRequestId = [
+  param('requestId')
+    .notEmpty().withMessage('O ID da requisição é obrigatório')
+    .isUUID().withMessage('O ID da requisição deve ser um UUID válido'),
+  
+  (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.warn('Erro de validação no ID da requisição:', errors.array());
+      return res.status(400).json({
+        error: 'Validation Error',
+        details: errors.array()
+      });
+    }
+    next();
   }
+];
 
-  req.validatedData = value;
-  next();
-}
-
-function validateListTranslations(req, res, next) {
-  const { error, value } = listTranslationsSchema.validate(req.query, {
-    abortEarly: false,
-    stripUnknown: true
-  });
-
-  if (error) {
-    return res.status(400).json({
-      error: 'Validation error',
-      details: error.details.map(detail => ({
-        field: detail.path.join('.'),
-        message: detail.message
-      }))
-    });
+// Validador para listar traduções
+const validateListTranslations = [
+  query('limit')
+    .optional()
+    .isInt({ min: 1, max: 100 }).withMessage('O limite deve ser um número entre 1 e 100')
+    .toInt(),
+  
+  query('offset')
+    .optional()
+    .isInt({ min: 0 }).withMessage('O offset deve ser um número maior ou igual a 0')
+    .toInt(),
+  
+  query('status')
+    .optional()
+    .isIn(['queued', 'processing', 'completed', 'failed']).withMessage('Status inválido'),
+  
+  query('sortBy')
+    .optional()
+    .isIn(['created_at', 'updated_at', 'status']).withMessage('Campo de ordenação inválido'),
+  
+  query('sortOrder')
+    .optional()
+    .isIn(['ASC', 'DESC']).withMessage('Ordem de classificação inválida'),
+  
+  (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.warn('Erro de validação na listagem de traduções:', errors.array());
+      return res.status(400).json({
+        error: 'Validation Error',
+        details: errors.array()
+      });
+    }
+    
+    // Adicionar parâmetros validados ao req
+    req.validatedQuery = {
+      limit: req.query.limit || 50,
+      offset: req.query.offset || 0,
+      status: req.query.status,
+      sortBy: req.query.sortBy || 'created_at',
+      sortOrder: req.query.sortOrder || 'DESC'
+    };
+    
+    next();
   }
-
-  req.validatedQuery = value;
-  next();
-}
-
-function validateRequestId(req, res, next) {
-  const { error } = uuidSchema.validate(req.params.requestId);
-
-  if (error) {
-    return res.status(400).json({
-      error: 'Validation error',
-      message: 'Invalid request ID format'
-    });
-  }
-
-  next();
-}
-
-// Função para validar idiomas
-function isValidLanguage(language) {
-  return SUPPORTED_LANGUAGES.includes(language);
-}
-
-// Função para obter lista de idiomas suportados
-function getSupportedLanguages() {
-  return SUPPORTED_LANGUAGES;
-}
+];
 
 module.exports = {
   validateCreateTranslation,
-  validateListTranslations,
   validateRequestId,
-  isValidLanguage,
-  getSupportedLanguages,
-  createTranslationSchema,
-  listTranslationsSchema,
-  uuidSchema
-};
+  validateListTranslations,
+  getSupportedLanguages
+}; 

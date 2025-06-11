@@ -1,107 +1,81 @@
 const { Pool } = require('pg');
+const logger = require('../utils/logger');
 
+// Configuração da conexão com o banco de dados
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgres123@localhost:5432/translation_db'
 });
 
-// Tabela de traduções
-const createTranslationsTable = `
-  CREATE TABLE IF NOT EXISTS translations (
-    id SERIAL PRIMARY KEY,
-    request_id UUID UNIQUE NOT NULL,
-    source_text TEXT NOT NULL,
-    source_language VARCHAR(10) NOT NULL,
-    target_language VARCHAR(10) NOT NULL,
-    translated_text TEXT,
-    status VARCHAR(20) NOT NULL DEFAULT 'queued',
-    error_message TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-  );
-`;
-
-// Índices para performance
-const createIndexes = `
-  CREATE INDEX IF NOT EXISTS idx_translations_request_id ON translations(request_id);
-  CREATE INDEX IF NOT EXISTS idx_translations_status ON translations(status);
-  CREATE INDEX IF NOT EXISTS idx_translations_created_at ON translations(created_at);
-`;
-
-// Trigger para atualizar updated_at automaticamente
-const createUpdatedAtTrigger = `
-  CREATE OR REPLACE FUNCTION update_updated_at_column()
-  RETURNS TRIGGER AS $$
-  BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-  END;
-  $$ language 'plpgsql';
-
-  DROP TRIGGER IF EXISTS update_translations_updated_at ON translations;
-  
-  CREATE TRIGGER update_translations_updated_at
-    BEFORE UPDATE ON translations
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-`;
-
-async function initializeDatabase() {
-  try {
-    // Testar conexão
-    const client = await pool.connect();
-    console.log('Database connection established');
-    
-    // Criar tabelas
-    await client.query(createTranslationsTable);
-    await client.query(createIndexes);
-    await client.query(createUpdatedAtTrigger);
-    
-    console.log('Database tables created/verified');
-    client.release();
-    
-    return true;
-  } catch (error) {
-    console.error('Database initialization error:', error);
-    throw error;
-  }
-}
-
-// Função para executar queries
+// Função para executar consultas no banco de dados
 async function query(text, params) {
   const start = Date.now();
   try {
-    const res = await pool.query(text, params);
+    const result = await pool.query(text, params);
     const duration = Date.now() - start;
-    console.log('Executed query', { text, duration, rows: res.rowCount });
-    return res;
+    
+    if (duration > 1000) {
+      logger.warn(`Consulta lenta: ${duration}ms`, {
+        text,
+        duration,
+        rows: result.rowCount
+      });
+    }
+    
+    return result;
   } catch (error) {
-    console.error('Query error:', { text, error: error.message });
+    logger.error('Erro ao executar consulta SQL:', error);
     throw error;
   }
 }
 
-// Função para transações
-async function transaction(callback) {
+// Função para obter cliente do pool para transações
+async function getClient() {
   const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const result = await callback(client);
-    await client.query('COMMIT');
+  const originalQuery = client.query;
+  const release = client.release;
+  
+  // Contabilizar tempo das consultas
+  client.query = (...args) => {
+    const start = Date.now();
+    const result = originalQuery.apply(client, args);
+    
+    result.then(() => {
+      const duration = Date.now() - start;
+      if (duration > 1000) {
+        logger.warn(`Consulta lenta em transação: ${duration}ms`, {
+          query: args[0],
+          duration,
+        });
+      }
+    }).catch(err => {
+      logger.error('Erro ao executar consulta em transação:', err);
+    });
+    
     return result;
+  };
+  
+  // Garantir que o cliente será liberado
+  client.release = () => {
+    client.query = originalQuery;
+    release.apply(client);
+  };
+  
+  return client;
+}
+
+// Função para encerrar o pool
+async function closePool() {
+  try {
+    await pool.end();
+    logger.info('Pool de conexões com o banco de dados encerrado');
   } catch (error) {
-    await client.query('ROLLBACK');
+    logger.error('Erro ao encerrar pool de conexões:', error);
     throw error;
-  } finally {
-    client.release();
   }
 }
 
 module.exports = {
-  pool,
   query,
-  transaction,
-  initializeDatabase
-};
+  getClient,
+  closePool
+}; 

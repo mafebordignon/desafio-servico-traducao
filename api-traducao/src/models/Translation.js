@@ -21,7 +21,7 @@ class Translation {
       sourceText,
       sourceLanguage,
       targetLanguage,
-      status = 'queued'
+      status = 'pending'
     } = translationData;
 
     const queryText = `
